@@ -1,0 +1,29 @@
+from openpyxl.styles import Border, Side, PatternFill, Alignment
+
+# ✅ Define styles
+black_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+dark_gray_fill = PatternFill(start_color="444444", end_color="444444", fill_type="solid")  # Optional: Dark gray gradient
+thin_white_border = Border(
+    top=Side(style='thin', color="FFFFFF"),
+    bottom=Side(style='thin', color="FFFFFF")
+)
+
+# ✅ Insert a visually enhanced separator row
+if prev_cluster and cluster != prev_cluster:
+    ws.append([""] * len(headers))  # Add empty row
+    last_row = ws.max_row
+    ws.merge_cells(start_row=last_row, start_column=1, end_row=last_row, end_column=len(headers))
+
+    # ✅ Apply fill (black or dark gray for a subtle gradient effect)
+    merged_cell = ws.cell(row=last_row, column=1)
+    merged_cell.fill = black_fill  # Change to dark_gray_fill if you prefer a gradient effect
+    merged_cell.value = ""  # Keep it blank
+    merged_cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # ✅ Adjust row height for better visibility
+    ws.row_dimensions[last_row].height = 20  
+
+    # ✅ Apply white border for better distinction
+    for col in range(1, len(headers) + 1):
+        cell = ws.cell(row=last_row, column=col)
+        cell.border = thin_white_border
