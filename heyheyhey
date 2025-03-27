@@ -1,91 +1,198 @@
+import requests
+import threading
 import openpyxl
-from openpyxl.styles import PatternFill, Border, Side, Alignment
-import json
+import urllib3
+from openpyxl.styles import PatternFill
+from openpyxl.utils import get_column_letter
 
-def read_servers(file_path='servers.txt'):
-    servers = {}
-    cluster = None
-    
-    with open(file_path, 'r') as file:
-        for line in file:
-            line = line.strip()
-            if line.startswith("Cluster:"):
-                cluster = line.replace("Cluster:", "").strip()
-                servers[cluster] = []
-            elif line:
-                servers[cluster].append(line)
-    
+# Suppress SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+# ✅ Function to Read Servers from servers.txt
+def read_servers(file_path="servers.txt"):
+    servers = []
+    current_cluster = None
+
+    try:
+        with open(file_path, "r") as file:
+            for line in file:
+                line = line.strip()
+                if line.lower().startswith("cluster:"):
+                    current_cluster = line.replace("Cluster:", "").strip()
+                elif line:
+                    servers.append((current_cluster, line))
+
+        if not servers:
+            raise ValueError("❌ Error: No servers found in servers.txt")
+
+    except Exception as e:
+        print(f"❌ Error reading servers.txt: {e}")
+        return []
+
     return servers
 
-def read_credentials(file_path='credentials.txt'):
-    with open(file_path, 'r') as file:
-        creds = json.load(file)
-    return creds['username'], creds['password']
 
-def check_hp_ilo(server, username, password):
-    # Simulated function to check HP iLO health
-    if "123" in server:
-        return {"health": "OK", "issues": "None"}
-    return {"health": "Warning", "issues": "Power: Warning, Processor: Warning"}
+# ✅ Function to Read Credentials from credentials.txt
+def read_credentials(file_path="credentials.txt"):
+    credentials = {}
 
-def check_dell_idrac(server, username, password):
-    # Simulated function to check Dell iDRAC health
-    if "789" in server:
-        return {"health": "Error", "issues": "Network: Failure, Storage: Critical"}
-    return {"health": "OK", "issues": "None"}
+    try:
+        with open(file_path, "r") as file:
+            for line in file:
+                if ":" in line:
+                    key, value = line.strip().split(":", 1)
+                    credentials[key.strip()] = value.strip()
 
-def generate_report(servers, username, password):
+        username = credentials.get("username", "").strip()
+        password = credentials.get("password", "").strip()
+
+        if not username or not password:
+            raise ValueError("❌ Error: Username or password missing in credentials.txt")
+
+    except Exception as e:
+        print(f"❌ Error reading credentials.txt: {e}")
+        return None, None
+
+    return username, password
+
+
+# ✅ Function to Check HP iLO Health Status
+def check_hp_ilo_health(ip, username, password):
+    url = f"https://{ip}/redfish/v1/Systems/1"
+    try:
+        response = requests.get(url, auth=(username, password), verify=False, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+
+        health_status = data.get("Status", {}).get("Health", "Unknown")
+        failed_components = []
+
+        if health_status.lower() != "ok":
+            components = data.get("Oem", {}).get("Hpe", {}).get("AggregateHealthStatus", {})
+            for key, value in components.items():
+                if value.lower() != "ok":
+                    failed_components.append(f"{key}: {value}")
+
+        failure_details = ", ".join(failed_components) if failed_components else "None"
+        return health_status, failure_details
+
+    except requests.exceptions.RequestException as e:
+        return "Error", str(e)
+
+
+# ✅ Function to Check Dell iDRAC (Redfish) Health Status
+def check_dell_redfish_health(ip, username, password):
+    url = f"https://{ip}/redfish/v1/Systems/System.Embedded.1"
+    try:
+        response = requests.get(url, auth=(username, password), verify=False, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+
+        health_status = data.get("Status", {}).get("Health", "Unknown")
+        failed_components = []
+
+        components = ["Power", "Processors", "Memory", "Storage", "NetworkAdapters"]
+        if health_status.lower() != "ok":
+            for component in components:
+                component_status = data.get(component, {}).get("Status", {}).get("Health", "Unknown")
+                if component_status.lower() != "ok":
+                    failed_components.append(f"{component}: {component_status}")
+
+        failure_details = ", ".join(failed_components) if failed_components else "None"
+        return health_status, failure_details
+
+    except requests.exceptions.RequestException as e:
+        return "Error", str(e)
+
+
+# ✅ Function to Determine Server Type & Route to Correct Health Check
+def check_server_health(cluster, ip, username, password, results):
+    if ip.lower().startswith("uname"):  # HP iLO
+        health_status, failure_details = check_hp_ilo_health(ip, username, password)
+        results.append([cluster, ip, health_status, failure_details])
+    elif ip.lower().startswith("bltwa"):  # Dell iDRAC (Redfish)
+        health_status, failure_details = check_dell_redfish_health(ip, username, password)
+        results.append([cluster, ip, health_status, failure_details])
+    else:
+        print(f"[SKIPPED] {ip} - Not an HP or Dell server")
+
+
+# ✅ Function to Save Results in an Excel File (With Sorting and Cluster Separation)
+def save_to_xlsx(results):
+    # ✅ Sort results by cluster
+    results.sort(key=lambda x: x[0])
+
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Health Report"
-    
+    ws.title = "Server Health Report"
+
+    # ✅ Headers
     headers = ["Cluster", "Server", "Health Status", "Issues"]
     ws.append(headers)
-    
-    black_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
-    thin_white_border = Border(
-        top=Side(style='thin', color="FFFFFF"),
-        bottom=Side(style='thin', color="FFFFFF")
-    )
-    
-    all_data = []
-    for cluster, server_list in servers.items():
-        for server in server_list:
-            if server.startswith("uname"):
-                result = check_hp_ilo(server, username, password)
-            elif server.startswith("bltwa"):
-                result = check_dell_idrac(server, username, password)
-            else:
-                continue  # Ignore unknown servers
-            
-            all_data.append([cluster, server, result["health"], result["issues"]])
-    
-    all_data.sort(key=lambda x: x[0])  # Sort by Cluster
-    
+
+    # ✅ Define Color Coding
+    green_fill = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid")  # Green for OK
+    yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")  # Yellow for Warning
+    red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")  # Red for Error
+    black_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")  # Black for separator row
+
     prev_cluster = None
-    for row in all_data:
-        cluster, server, health, issues = row
-        
-        # Insert a separator row when a new cluster starts
-        if prev_cluster and prev_cluster != cluster:
+    for row in results:
+        cluster, server, health_status, issues = row
+
+        # ✅ Add a black-colored separator row before a new cluster
+        if prev_cluster and cluster != prev_cluster:
             ws.append([""] * len(headers))  # Add empty row
             last_row = ws.max_row
             ws.merge_cells(start_row=last_row, start_column=1, end_row=last_row, end_column=len(headers))
-            merged_cell = ws.cell(row=last_row, column=1)
-            merged_cell.fill = black_fill
-            merged_cell.value = ""
-            merged_cell.alignment = Alignment(horizontal="center", vertical="center")
-            ws.row_dimensions[last_row].height = 20  # Make it stand out
             for col in range(1, len(headers) + 1):
-                ws.cell(row=last_row, column=col).border = thin_white_border
-        
-        ws.append(row)
-        prev_cluster = cluster
-    
-    wb.save("server_health_report.xlsx")
-    print("Report generated: server_health_report.xlsx")
+                ws.cell(row=last_row, column=col).fill = black_fill
 
+        ws.append(row)
+        cell = ws.cell(row=ws.max_row, column=3)  # Health Status column
+
+        # Apply color coding
+        if health_status.lower() == "ok":
+            cell.fill = green_fill
+        elif health_status.lower() == "warning":
+            cell.fill = yellow_fill
+        elif "error" in health_status.lower():
+            cell.fill = red_fill
+
+        prev_cluster = cluster  # Update previous cluster
+
+    # ✅ Save XLSX file
+    wb.save("server_health_report.xlsx")
+    print("✅ Report saved: server_health_report.xlsx")
+
+
+# ✅ Main Function
+def main():
+    servers = read_servers("servers.txt")
+    username, password = read_credentials("credentials.txt")
+
+    if not servers or not username or not password:
+        print("❌ Exiting due to missing or invalid input files.")
+        return
+
+    results = []
+    threads = []
+
+    for cluster, ip in servers:
+        thread = threading.Thread(target=check_server_health, args=(cluster, ip, username, password, results))
+        thread.start()
+        threads.append(thread)
+
+    for thread in threads:
+        thread.join()
+
+    # ✅ Save results to XLSX
+    save_to_xlsx(results)
+
+    print("✅ Health check completed. Results saved in 'server_health_report.xlsx'.")
+
+
+# ✅ Run the script
 if __name__ == "__main__":
-    servers = read_servers()
-    username, password = read_credentials()
-    generate_report(servers, username, password)
+    main()
