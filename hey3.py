@@ -27,9 +27,9 @@ def check_dell_redfish_health(ip, username, password):
 
 # Function to determine server type and check health
 def check_server_health(ip, username, password, results):
-    if "hp" in ip.lower():
+    if ip.lower().startswith("uname"):  # HP servers
         health_status = check_hp_ilo_health(ip, username, password)
-    elif "dell" in ip.lower():
+    elif ip.lower().startswith("bltwa"):  # Dell servers
         health_status = check_dell_redfish_health(ip, username, password)
     else:
         health_status = "Unknown server type"
@@ -70,9 +70,9 @@ def save_to_xlsx(results):
 # Main function to read server list and check health
 def main():
     servers = [
-        "server1.example.com",
-        "server2.example.com",
-        "server3.example.com"
+        "uname-server1.example.com",  # HP server
+        "bltwa-server2.example.com",  # Dell server
+        "random-server3.example.com"  # Unknown type
     ]
     username = "admin"
     password = "password"
