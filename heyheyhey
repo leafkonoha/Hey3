@@ -1,0 +1,154 @@
+import requests
+import threading
+import openpyxl
+import urllib3
+from datetime import datetime
+from openpyxl.styles import PatternFill
+
+# Suppress SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Function to read servers from servers.txt
+def read_servers(file_path="servers.txt"):
+    servers = []
+    clusters = set()
+    current_cluster = None
+    
+    try:
+        with open(file_path, "r") as file:
+            for line in file:
+                line = line.strip()
+                if line.lower().startswith("cluster:"):
+                    current_cluster = line.replace("Cluster:", "").strip()
+                    clusters.add(current_cluster)
+                elif line:
+                    servers.append((current_cluster, line))
+        
+        if not servers:
+            raise ValueError("No servers found in servers.txt")
+    except Exception as e:
+        print(f"Error reading servers.txt: {e}")
+        return [], 0, 0
+    
+    return servers, len(clusters), len(servers)
+
+# Function to read credentials from credentials.txt
+def read_credentials(file_path="credentials.txt"):
+    credentials = {}
+    
+    try:
+        with open(file_path, "r") as file:
+            for line in file:
+                if ":" in line:
+                    key, value = line.strip().split(":", 1)
+                    credentials[key.strip()] = value.strip()
+    
+        username = credentials.get("username", "").strip()
+        password = credentials.get("password", "").strip()
+        
+        if not username or not password:
+            raise ValueError("Username or password missing in credentials.txt")
+    except Exception as e:
+        print(f"Error reading credentials.txt: {e}")
+        return None, None
+    
+    return username, password
+
+# Function to check HP iLO health
+def check_hp_ilo_health(ip, username, password):
+    url = f"https://{ip}/redfish/v1/Systems/1"
+    try:
+        response = requests.get(url, auth=(username, password), verify=False, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        health_status = data.get("Status", {}).get("Health", "Unknown")
+        failed_components = [
+            f"{key}: {value}" for key, value in data.get("Oem", {}).get("Hpe", {}).get("AggregateHealthStatus", {}).items()
+            if value.lower() != "ok"
+        ]
+        return health_status, ", ".join(failed_components) if failed_components else "None"
+    except requests.exceptions.RequestException as e:
+        return "Error", str(e)
+
+# Function to check Dell iDRAC health
+def check_dell_redfish_health(ip, username, password):
+    url = f"https://{ip}/redfish/v1/Systems/System.Embedded.1"
+    try:
+        response = requests.get(url, auth=(username, password), verify=False, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        
+        health_status = data.get("Status", {}).get("Health", "Unknown")
+        failed_components = [
+            f"{comp}: {data.get(comp, {}).get('Status', {}).get('Health', 'Unknown')}"
+            for comp in ["Power", "Processors", "Memory", "Storage", "NetworkAdapters"]
+            if data.get(comp, {}).get("Status", {}).get("Health", "Unknown").lower() != "ok"
+        ]
+        return health_status, ", ".join(failed_components) if failed_components else "None"
+    except requests.exceptions.RequestException as e:
+        return "Error", str(e)
+
+# Function to determine server type
+def check_server_health(cluster, ip, username, password, results):
+    if ip.lower().startswith("uname"):  # HP iLO
+        health_status, failure_details = check_hp_ilo_health(ip, username, password)
+    elif ip.lower().startswith("bltwa"):  # Dell iDRAC
+        health_status, failure_details = check_dell_redfish_health(ip, username, password)
+    else:
+        print(f"[SKIPPED] {ip} - Not an HP or Dell server")
+        return
+    results.append([cluster, ip, health_status, failure_details])
+
+# Function to save results to Excel
+def save_to_xlsx(results, cluster_count, host_count):
+    results.sort(key=lambda x: x[0])  # Sort by cluster
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Server Health Report"
+    
+    ws.append(["Cluster", "Server", "Health Status", "Issues"])
+    white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    prev_cluster = None
+    
+    for row in results:
+        cluster, server, health_status, issues = row
+        if prev_cluster and cluster != prev_cluster:
+            ws.append([""] * 4)  # Empty row for separation
+            last_row = ws.max_row
+            ws.merge_cells(start_row=last_row, start_column=1, end_row=last_row, end_column=4)
+            for col in range(1, 5):
+                ws.cell(row=last_row, column=col).fill = white_fill
+        ws.append(row)
+        prev_cluster = cluster
+    
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filename = f"server_health_report_{cluster_count}clusters_{host_count}hosts_{timestamp}.xlsx"
+    wb.save(filename)
+    print(f"✅ Report saved: {filename}")
+
+# Main function
+def main():
+    servers, cluster_count, host_count = read_servers("servers.txt")
+    username, password = read_credentials("credentials.txt")
+    
+    if not servers or not username or not password:
+        print("❌ Exiting due to missing or invalid input files.")
+        return
+    
+    results = []
+    threads = []
+    
+    for cluster, ip in servers:
+        thread = threading.Thread(target=check_server_health, args=(cluster, ip, username, password, results))
+        thread.start()
+        threads.append(thread)
+    
+    for thread in threads:
+        thread.join()
+    
+    save_to_xlsx(results, cluster_count, host_count)
+    print("✅ Health check completed.")
+
+if __name__ == "__main__":
+    main()
