@@ -93,15 +93,11 @@ def check_dell_idrac_health(ip, username, password):
 
 # Function to Determine Server Type & Route to Correct Health Check
 def check_server_health(cluster, ip, username, password, results):
-    health_status, failure_details, server_name = "Error", "Unknown", "Unknown"
-    if ip.lower().startswith("uname"):  # HP iLO
-        health_status, failure_details, server_name = check_hp_ilo_health(ip, username, password)
-    elif ip.lower().startswith("bltwa"):  # Dell iDRAC
+    health_status, failure_details, server_name = check_hp_ilo_health(ip, username, password)
+    
+    if health_status == "Error":  # If HP iLO fails, try Dell iDRAC
         health_status, failure_details, server_name = check_dell_idrac_health(ip, username, password)
-    else:  # Try both methods
-        health_status, failure_details, server_name = check_hp_ilo_health(ip, username, password)
-        if health_status == "Error":
-            health_status, failure_details, server_name = check_dell_idrac_health(ip, username, password)
+    
     results.append([cluster, ip, server_name, health_status, failure_details])
 
 # Function to Save Results in an Excel File
