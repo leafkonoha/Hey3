@@ -45,34 +45,27 @@ def read_credentials(file_path="credentials.txt"):
         return None, None
     return username, password
 
-# Function to Make API Request with HTTPS, Retry with HTTP if Needed
+# Function to Make API Request, Switching Between HTTPS and HTTP if Necessary
 def make_request(url, username, password):
-    try:
-        response = requests.get(url, auth=(username, password), verify=False, timeout=5)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.SSLError:
-        print(f"SSL Error for {url}, bypassing verification...")
+    protocols = ["https://", "http://"]
+    for protocol in protocols:
         try:
-            response = requests.get(url.replace("https://", "http://"), auth=(username, password), verify=False, timeout=5)
+            response = requests.get(f"{protocol}{url}", auth=(username, password), verify=False, timeout=5)
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.SSLError:
+            continue
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 404:
+                continue  # Silently try next
+            return {"error": str(e)}
         except requests.exceptions.RequestException as e:
             return {"error": str(e)}
-    except requests.exceptions.RequestException as e:
-        if "404" in str(e):
-            print(f"404 Not Found for {url}, retrying with HTTP...")
-            try:
-                response = requests.get(url.replace("https://", "http://"), auth=(username, password), verify=False, timeout=5)
-                response.raise_for_status()
-                return response.json()
-            except requests.exceptions.RequestException as e:
-                return {"error": str(e)}
-        return {"error": str(e)}
+    return {"error": "Both HTTPS and HTTP failed"}
 
 # Function to Check HP iLO Health Status
 def check_hp_ilo_health(ip, username, password):
-    url = f"https://{ip}/rest/v1/systems/1"
+    url = f"{ip}/rest/v1/systems/1"
     data = make_request(url, username, password)
 
     if "error" in data:
@@ -96,7 +89,7 @@ def check_hp_ilo_health(ip, username, password):
 
 # Function to Check Dell iDRAC Health Status
 def check_dell_idrac_health(ip, username, password):
-    url = f"https://{ip}/redfish/v1/Systems/System.Embedded.1"
+    url = f"{ip}/redfish/v1/Systems/System.Embedded.1"
     data = make_request(url, username, password)
 
     if "error" in data:
@@ -121,15 +114,9 @@ def check_dell_idrac_health(ip, username, password):
 
 # Function to Determine Server Type & Route to Correct Health Check
 def check_server_health(cluster, ip, username, password, results):
-    health_status, failure_details, server_name = "Error", "Unknown", "Unknown"
-    
-    # Try HP iLO first
     health_status, failure_details, server_name = check_hp_ilo_health(ip, username, password)
-    
-    # If HP check fails, try Dell iDRAC
     if health_status == "Error":
         health_status, failure_details, server_name = check_dell_idrac_health(ip, username, password)
-
     results.append([cluster, ip, server_name, health_status, failure_details])
 
 # Function to Save Results in an Excel File
@@ -145,33 +132,18 @@ def save_to_xlsx(results):
     green_fill = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid")
     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     red_fill = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
-    white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-
-    prev_cluster = None
+    
     for row in results:
-        cluster, server, system_id, health_status, issues = row
-        
-        if prev_cluster and cluster != prev_cluster:
-            ws.append([""] * len(headers))
-            last_row = ws.max_row
-            ws.merge_cells(start_row=last_row, start_column=1, end_row=last_row, end_column=len(headers))
-            for col in range(1, len(headers) + 1):
-                ws.cell(row=last_row, column=col).fill = white_fill
-        
         ws.append(row)
         cell = ws.cell(row=ws.max_row, column=4)
-
-        if health_status.lower() == "ok":
+        if row[3].lower() == "ok":
             cell.fill = green_fill
-        elif health_status.lower() == "warning":
+        elif row[3].lower() == "warning":
             cell.fill = yellow_fill
-        elif "error" in health_status.lower():
+        elif "error" in row[3].lower():
             cell.fill = red_fill
-
-        prev_cluster = cluster
-
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"server_health_report_{timestamp}.xlsx"
+    
+    filename = f"server_health_report_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
     wb.save(filename)
     print(f"Report saved: {filename}")
 
